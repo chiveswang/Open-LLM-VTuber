@@ -52,12 +52,65 @@ def _read_json(path: Path) -> dict[str, Any]:
     return data
 
 
-def _relative_file_status(model_dir: Path, file_name: str | None) -> dict[str, Any]:
+def _relative_file_status(model_dir: Path, file_name: Any) -> dict[str, Any]:
     """Describe a model-relative file reference and whether it exists."""
-    if not file_name:
+    if not isinstance(file_name, str) or not file_name:
         return {"file": "", "exists": False}
-    file_path = model_dir / file_name
+    relative_path = Path(*file_name.replace("\\", "/").split("/"))
+    file_path = model_dir / relative_path
     return {"file": file_name, "exists": file_path.exists()}
+
+
+def _extract_core_files(
+    file_references: dict[str, Any], model_dir: Path
+) -> list[dict[str, Any]]:
+    """Extract core Cubism file references such as the MOC and textures."""
+    output: list[dict[str, Any]] = []
+    singular_references = (
+        ("Moc", "moc"),
+        ("Physics", "physics"),
+        ("Pose", "pose"),
+        ("DisplayInfo", "display_info"),
+        ("UserData", "user_data"),
+    )
+    for source_key, kind in singular_references:
+        file_name = _case_get(file_references, source_key)
+        if file_name is None:
+            continue
+        output.append({"kind": kind, **_relative_file_status(model_dir, file_name)})
+
+    textures = _case_get(file_references, "Textures", [])
+    if isinstance(textures, list):
+        for index, file_name in enumerate(textures):
+            output.append(
+                {
+                    "kind": "texture",
+                    "index": index,
+                    **_relative_file_status(model_dir, file_name),
+                }
+            )
+    return output
+
+
+def _collect_missing_files(
+    core_files: list[dict[str, Any]],
+    expressions: list[dict[str, Any]],
+    motions: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Collect every missing reference into one machine-readable list."""
+    missing = [entry for entry in core_files if not entry["exists"]]
+    missing.extend(
+        {"kind": "expression", "name": entry["name"], **entry}
+        for entry in expressions
+        if not entry["exists"]
+    )
+    for group_name, entries in motions.items():
+        missing.extend(
+            {"kind": "motion", "group": group_name, **entry}
+            for entry in entries
+            if not entry["exists"]
+        )
+    return missing
 
 
 def _extract_expressions(
@@ -171,6 +224,8 @@ def inspect_model(
         file_references = {}
 
     motions = _extract_motions(file_references, model_dir)
+    expressions = _extract_expressions(file_references, model_dir)
+    core_files = _extract_core_files(file_references, model_dir)
     suggested_model_name = model_name or _suggest_model_name(
         resolved_model3_path, model_root
     )
@@ -192,10 +247,12 @@ def inspect_model(
         "model3_path": str(resolved_model3_path),
         "version": _case_get(data, "Version", ""),
         "moc": _case_get(file_references, "Moc", ""),
-        "texture_count": len(_case_get(file_references, "Textures", []) or []),
-        "expressions": _extract_expressions(file_references, model_dir),
+        "texture_count": sum(1 for entry in core_files if entry["kind"] == "texture"),
+        "core_files": core_files,
+        "expressions": expressions,
         "motions": motions,
         "hit_areas": _extract_hit_areas(data),
+        "missing_files": _collect_missing_files(core_files, expressions, motions),
         "suggested_model_dict_entry": model_dict_entry,
         "suggested_character_config": {
             "conf_name": suggested_model_name,
@@ -229,6 +286,14 @@ def _format_table(headers: list[str], rows: list[list[str]]) -> str:
 
 def _format_text(summary: dict[str, Any]) -> str:
     """Format an inspection summary as a human-readable text report."""
+    core_file_rows = [
+        [
+            entry["kind"],
+            entry["file"],
+            "yes" if entry["exists"] else "no",
+        ]
+        for entry in summary["core_files"]
+    ]
     expression_rows = [
         [
             str(expression["index"]),
@@ -246,6 +311,14 @@ def _format_text(summary: dict[str, Any]) -> str:
 
     hit_area_rows = [
         [hit_area["id"], hit_area["name"]] for hit_area in summary["hit_areas"]
+    ]
+    missing_file_rows = [
+        [
+            entry["kind"],
+            str(entry.get("name") or entry.get("group") or entry.get("index", "")),
+            entry["file"] or "<invalid reference>",
+        ]
+        for entry in summary["missing_files"]
     ]
 
     character_config = summary["suggested_character_config"]
@@ -269,12 +342,16 @@ def _format_text(summary: dict[str, Any]) -> str:
             f"Version: {summary['version']}",
             f"MOC: {summary['moc']}",
             f"Texture count: {summary['texture_count']}",
+            "## Core files",
+            _format_table(["Kind", "File", "Exists"], core_file_rows),
             "## Expressions",
             _format_table(["Index", "Name", "File", "Exists"], expression_rows),
             "## Motion groups",
             _format_table(["Group", "Total", "Existing files"], motion_rows),
             "## Hit areas",
             _format_table(["Id", "Name"], hit_area_rows),
+            "## Missing referenced files",
+            _format_table(["Kind", "Context", "File"], missing_file_rows),
             "## Minimal model_dict.json entry",
             "```json\n"
             + json.dumps(summary["suggested_model_dict_entry"], indent=2)
