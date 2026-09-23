@@ -78,8 +78,36 @@ class InspectLive2DModelTests(unittest.TestCase):
             )
 
             self.assertEqual(summary["texture_count"], 0)
-            self.assertEqual(summary["core_files"], [])
-            self.assertEqual(summary["missing_files"], [])
+            self.assertEqual(
+                summary["core_files"],
+                [{"kind": "moc", "file": "", "exists": False}],
+            )
+            self.assertEqual(summary["missing_files"], summary["core_files"])
+
+    def test_reports_absent_moc_with_other_valid_references(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_dir = Path(temp_dir)
+            (model_dir / "texture.png").write_bytes(b"png")
+            model_path = model_dir / "sample.model3.json"
+            model_path.write_text(
+                json.dumps({"FileReferences": {"Textures": ["texture.png"]}}),
+                encoding="utf-8",
+            )
+
+            summary = inspect_model(
+                model_path,
+                model_dir,
+                model_name=None,
+                character_name=None,
+            )
+
+            self.assertEqual(summary["texture_count"], 1)
+            self.assertEqual(
+                summary["missing_files"],
+                [{"kind": "moc", "file": "", "exists": False}],
+            )
+            self.assertIn("moc", _format_text(summary))
+            self.assertIn("<invalid reference>", _format_text(summary))
 
 
 if __name__ == "__main__":

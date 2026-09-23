@@ -75,7 +75,7 @@ def _extract_core_files(
     )
     for source_key, kind in singular_references:
         file_name = _case_get(file_references, source_key)
-        if file_name is None:
+        if file_name is None and kind != "moc":
             continue
         output.append({"kind": kind, **_relative_file_status(model_dir, file_name)})
 
