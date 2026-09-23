@@ -10,6 +10,7 @@ import argparse
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 DEFAULT_MODEL_ROOT = Path("live2d-models")
@@ -177,12 +178,27 @@ def _extract_hit_areas(data: dict[str, Any]) -> list[dict[str, str]]:
     return output
 
 
-def _suggest_model_url(model3_path: Path, model_root: Path) -> str:
+def _suggest_model_url(
+    model3_path: Path, model_root: Path, public_url: str | None = None
+) -> str | None:
     """Build the public model URL expected by the web Live2D config."""
+    if public_url is not None:
+        url = public_url.strip()
+        parsed = urlsplit(url)
+        root_relative = url.startswith("/") and not url.startswith("//")
+        absolute_http = parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+        if (
+            not url
+            or any(character.isspace() for character in url)
+            or "\\" in url
+            or not (root_relative or absolute_http)
+        ):
+            raise ValueError("--public-url must be a root-relative or HTTP(S) URL")
+        return url
     try:
         relative = model3_path.resolve().relative_to(model_root.resolve())
     except ValueError:
-        return "<path-to-model3.json>"
+        return None
     return "/" + str((Path("live2d-models") / relative).as_posix())
 
 
@@ -214,6 +230,7 @@ def inspect_model(
     model_root: Path,
     model_name: str | None,
     character_name: str | None,
+    public_url: str | None = None,
 ) -> dict[str, Any]:
     """Inspect one Live2D model and return metadata plus setup suggestions."""
     resolved_model3_path = _resolve_model3_path(model3_path)
@@ -232,16 +249,19 @@ def inspect_model(
     suggested_character_name = character_name or suggested_model_name.replace("-", " ")
     idle_group = _find_idle_group(motions)
 
-    model_dict_entry: dict[str, Any] = {
-        "name": suggested_model_name,
-        "description": "",
-        "url": _suggest_model_url(resolved_model3_path, model_root),
-        "kScale": 0.5,
-        "initialXshift": 0,
-        "initialYshift": 0,
-    }
-    if idle_group is not None:
-        model_dict_entry["idleMotionGroupName"] = idle_group
+    model_url = _suggest_model_url(resolved_model3_path, model_root, public_url)
+    model_dict_entry: dict[str, Any] | None = None
+    if model_url is not None:
+        model_dict_entry = {
+            "name": suggested_model_name,
+            "description": "",
+            "url": model_url,
+            "kScale": 0.5,
+            "initialXshift": 0,
+            "initialYshift": 0,
+        }
+        if idle_group is not None:
+            model_dict_entry["idleMotionGroupName"] = idle_group
 
     return {
         "model3_path": str(resolved_model3_path),
@@ -353,9 +373,13 @@ def _format_text(summary: dict[str, Any]) -> str:
             "## Missing referenced files",
             _format_table(["Kind", "Context", "File"], missing_file_rows),
             "## Minimal model_dict.json entry",
-            "```json\n"
-            + json.dumps(summary["suggested_model_dict_entry"], indent=2)
-            + "\n```",
+            (
+                "```json\n"
+                + json.dumps(summary["suggested_model_dict_entry"], indent=2)
+                + "\n```"
+                if summary["suggested_model_dict_entry"] is not None
+                else "Unavailable: model file is outside --model-root. Supply --public-url after serving the file."
+            ),
             "## Character config starter",
             "```yaml\n" + character_yaml + "\n```",
         ]
@@ -387,18 +411,26 @@ def main() -> int:
         help="Character name to use in the suggested character config.",
     )
     parser.add_argument(
+        "--public-url",
+        help="Served URL for a model file outside --model-root, e.g. /live2d-models/my-model/model.model3.json.",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Print machine-readable JSON instead of the text report.",
     )
     args = parser.parse_args()
 
-    summary = inspect_model(
-        model3_path=args.path,
-        model_root=args.model_root,
-        model_name=args.name,
-        character_name=args.character_name,
-    )
+    try:
+        summary = inspect_model(
+            model3_path=args.path,
+            model_root=args.model_root,
+            model_name=args.name,
+            character_name=args.character_name,
+            public_url=args.public_url,
+        )
+    except ValueError as error:
+        parser.error(str(error))
     if args.json:
         print(json.dumps(summary, indent=2))
     else:

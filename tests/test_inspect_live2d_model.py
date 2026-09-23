@@ -109,6 +109,40 @@ class InspectLive2DModelTests(unittest.TestCase):
             self.assertIn("moc", _format_text(summary))
             self.assertIn("<invalid reference>", _format_text(summary))
 
+    def test_outside_model_root_needs_a_served_url_for_config_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            model_path = root / "external" / "sample.model3.json"
+            model_path.parent.mkdir()
+            model_path.write_text(
+                json.dumps({"FileReferences": {"Moc": "sample.moc3"}}),
+                encoding="utf-8",
+            )
+            model_root = root / "live2d-models"
+
+            summary = inspect_model(model_path, model_root, None, None)
+            self.assertEqual(summary["model3_path"], str(model_path))
+            self.assertIsNone(summary["suggested_model_dict_entry"])
+            self.assertIn("Supply --public-url", _format_text(summary))
+            self.assertNotIn('"url":', _format_text(summary))
+
+            with_url = inspect_model(
+                model_path,
+                model_root,
+                None,
+                None,
+                public_url="/live2d-models/custom/sample.model3.json",
+            )
+            self.assertEqual(
+                with_url["suggested_model_dict_entry"]["url"],
+                "/live2d-models/custom/sample.model3.json",
+            )
+            self.assertIn('"url":', _format_text(with_url))
+            with self.assertRaisesRegex(ValueError, "--public-url"):
+                inspect_model(
+                    model_path, model_root, None, None, public_url="javascript:alert(1)"
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
